@@ -55,8 +55,8 @@ function buildEntry(req: CapturedRequest) {
     request: {
       method: req.method,
       url: req.url,
-      httpVersion: 'HTTP/1.1',
-      cookies: [],
+      httpVersion: req.protocol ?? 'HTTP/1.1',
+      cookies: req.requestCookies ?? [],
       headers: req.requestHeaders,
       queryString,
       headersSize: -1,
@@ -66,8 +66,8 @@ function buildEntry(req: CapturedRequest) {
     response: {
       status: req.status ?? 0,
       statusText: req.statusText ?? '',
-      httpVersion: 'HTTP/1.1',
-      cookies: [],
+      httpVersion: req.protocol ?? 'HTTP/1.1',
+      cookies: req.responseCookies ?? [],
       headers: req.responseHeaders,
       content,
       redirectURL: '',
@@ -82,6 +82,11 @@ function buildEntry(req: CapturedRequest) {
     },
     _resourceType: req.type,
     _initiator: req.initiator,
+    // Server metadata
+    ...(req.remoteAddress ? { _remoteAddress: req.remoteAddress } : {}),
+    ...(req.remotePort != null ? { _remotePort: req.remotePort } : {}),
+    ...(req.protocol ? { _protocol: req.protocol } : {}),
+    // WebSocket extras
     ...(req.type === 'WebSocket' && req.wsMessages
       ? {
           _webSocketMessages: req.wsMessages.map((m) => ({
@@ -90,6 +95,21 @@ function buildEntry(req: CapturedRequest) {
             opcode: m.opcode,
             data: m.payload,
             ...(m.isBinary || m.opcode === 2 ? { encoding: 'base64' } : {}), // dual-path
+          })),
+        }
+      : {}),
+    ...(req.wsError ? { _webSocketError: req.wsError } : {}),
+    ...(req.wsStatus != null ? { _webSocketStatus: req.wsStatus } : {}),
+    ...(req.wsStatusText ? { _webSocketStatusText: req.wsStatusText } : {}),
+    ...(req.wsResponseHeaders ? { _webSocketResponseHeaders: req.wsResponseHeaders } : {}),
+    // SSE messages
+    ...(req.eventSourceMessages?.length
+      ? {
+          _eventSourceMessages: req.eventSourceMessages.map((m) => ({
+            event: m.eventName,
+            id: m.eventId,
+            data: m.data,
+            time: m.timestamp / 1000,
           })),
         }
       : {}),

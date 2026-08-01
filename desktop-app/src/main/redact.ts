@@ -31,7 +31,9 @@ export function redactRequest(req: CapturedRequest, cfg: RedactionConfig): Captu
   return {
     ...req,
     requestHeaders: maskHeaders(req.requestHeaders, cfg.headerPatterns),
+    requestCookies: req.requestCookies ? maskHeaders(req.requestCookies, cfg.headerPatterns) : undefined,
     responseHeaders: maskHeaders(req.responseHeaders, cfg.headerPatterns),
+    responseCookies: req.responseCookies ? maskHeaders(req.responseCookies, cfg.headerPatterns) : undefined,
     requestBody: maskBody(req.requestBody, cfg.bodyPatterns),
     responseBody: maskBody(req.responseBody, cfg.bodyPatterns),
   };

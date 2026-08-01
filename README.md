@@ -138,9 +138,42 @@ Once a tab has started capturing, **flow capture (sticky tabs)** keeps it record
   - `capture.har` — full HAR
   - `summary.json` — flat list of requests with timing/status
   - `metadata.json` — export timestamp, tool version, redaction flag
-  - `requests/` — one JSON file per request with raw captured data (including WebSocket frames)
+  - `requests/` — one JSON file per request with raw captured data (including WebSocket frames, SSE messages)
 
 > **RAR not supported**: pure-JS RAR creation is not freely available. ZIP is recommended; open the ZIP and re-archive with WinRAR if you specifically need RAR.
+
+## Captured fields
+
+Every captured request includes the following fields (all persisted to SQLite and included in HAR/ZIP exports):
+
+**Core fields:** method, URL, host, status, status text, request/response headers, request/response body (base64 for binary), resource type, timing (started, ended, duration), from-cache flag.
+
+**Cookie capture (new):**
+- `requestCookies` — structured cookie list parsed from the real `Cookie` header sent over the wire (via `Network.requestWillBeSentExtraInfo`). Previous versions only captured pre-cookie headers.
+- `responseCookies` — structured `Set-Cookie` list from the real response headers (via `Network.responseReceivedExtraInfo`). Chrome strips `Set-Cookie` from the standard `responseReceived` event; this restores it.
+
+**Server metadata (new):**
+- `remoteAddress` — server IP address (e.g. `104.18.32.47`)
+- `remotePort` — server port (e.g. `443`)
+- `protocol` — network protocol (e.g. `h2`, `http/1.1`)
+
+**Initiator with stack traces (new):**
+- `initiator` — full CDP initiator object with `type`, `url`, `lineNumber`, `columnNumber`, and `stack.callFrames[]` (function name + URL + line + column for each frame). Previous versions only captured `initiator.type` as a string.
+
+**WebSocket capture (enhanced):**
+- `wsMessages[]` — sent/received frames with direction, timestamp, opcode, payload, binary flag (unchanged)
+- `wsError` — protocol-level error text (via `Network.webSocketFrameError`)
+- `wsStatus` / `wsStatusText` — handshake response status code and text (via `Network.webSocketWillSendHandshakeResponse`)
+- `wsResponseHeaders` — full handshake response headers
+
+**Server-Sent Events (new):**
+- `eventSourceMessages[]` — each SSE message with `eventName`, `eventId`, `data`, and `timestamp` (via `Network.eventSourceMessageReceived`). Bounded to 5000 messages per request (drop-oldest).
+
+**Page lifecycle (new):**
+- `pageEvents[]` — navigation, DOMContentLoaded, and Load events with timestamp and URL (via `Page.frameNavigated`, `Page.domContentEventFired`, `Page.loadEventFired`). Provides timeline context for when requests occurred relative to page load phases.
+
+**Cache control (new):**
+- Cache is force-disabled during capture (`Network.setCacheDisabled`) so response bodies are always fetched fresh from the network — never served from disk cache where `getResponseBody` would return empty.
 
 ## Sensitive-data redaction
 

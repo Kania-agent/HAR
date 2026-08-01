@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   CapturedRequest,
   WebSocketMessage,
+  EventSourceMessage,
+  PageEvent,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -120,6 +122,18 @@ const api = {
       cb(payload.id, payload.message);
     ipcRenderer.on('capture:ws-message', handler);
     return () => ipcRenderer.off('capture:ws-message', handler);
+  },
+  onSseMessage: (cb: (id: string, msg: EventSourceMessage) => void) => {
+    const handler = (_: unknown, payload: { id: string; message: EventSourceMessage }) =>
+      cb(payload.id, payload.message);
+    ipcRenderer.on('capture:sse-message', handler);
+    return () => ipcRenderer.off('capture:sse-message', handler);
+  },
+  onPageEvent: (cb: (tabId: number, event: PageEvent) => void) => {
+    const handler = (_: unknown, payload: { tabId: number; event: PageEvent }) =>
+      cb(payload.tabId, payload.event);
+    ipcRenderer.on('capture:page-event', handler);
+    return () => ipcRenderer.off('capture:page-event', handler);
   },
   onStatus: (cb: (status: StatusPayload) => void) => {
     const handler = (_: unknown, status: StatusPayload) => cb(status);

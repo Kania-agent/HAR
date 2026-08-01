@@ -33,6 +33,11 @@ export function initDb(): Database.Database {
       method TEXT,
       status INTEGER,
       startedAt INTEGER,
+      remoteAddress TEXT,
+      remotePort INTEGER,
+      protocol TEXT,
+      wsError TEXT,
+      wsStatus INTEGER,
       PRIMARY KEY (sessionId, id),
       FOREIGN KEY (sessionId) REFERENCES sessions(id) ON DELETE CASCADE
     );
@@ -57,6 +62,22 @@ export function initDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_captchas_session ON captchas(sessionId, detectedAt);
   `);
+  // Migrate existing databases: add new columns that may not exist yet.
+  // Each ALTER is wrapped in try/catch because SQLite errors on duplicate columns.
+  const newColumns: Array<[string, string]> = [
+    ['remoteAddress', 'TEXT'],
+    ['remotePort', 'INTEGER'],
+    ['protocol', 'TEXT'],
+    ['wsError', 'TEXT'],
+    ['wsStatus', 'INTEGER'],
+  ];
+  for (const [col, type] of newColumns) {
+    try {
+      db.exec(`ALTER TABLE requests ADD COLUMN ${col} ${type}`);
+    } catch {
+      // Column already exists — expected on databases created after the schema update.
+    }
+  }
   return db;
 }
 

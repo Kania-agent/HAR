@@ -6,6 +6,9 @@ import {
   type CaptureScope,
   type CapturedHeader,
   type CapturedRequest,
+  type EventSourceMessage,
+  type Initiator,
+  type PageEvent,
   type ResourceType,
   type WebSocketMessage,
 } from '@har-suite/shared';
@@ -38,6 +41,10 @@ type Listener = {
   onRequest: (req: CapturedRequest) => void;
   onUpdate: (id: string, patch: Partial<CapturedRequest>) => void;
   onWsMessage: (id: string, msg: WebSocketMessage) => void;
+  /** Fires for every SSE message received on an EventSource connection. */
+  onSseMessage?: (id: string, msg: EventSourceMessage) => void;
+  /** Fires for page lifecycle events (navigation, DOMContentLoaded, load). */
+  onPageEvent?: (tabId: number, event: PageEvent) => void;
   /** Fires for every request URL regardless of resource type — used for captcha detection. */
   onCaptchaUrl?: (url: string, tabId: number, requestId: string, requestBody?: string) => void;
 };
@@ -69,7 +76,8 @@ interface InFlight {
   startMonotonicSec?: number;
   requestHeaders: CapturedHeader[];
   requestBody?: string;
-  initiator?: string;
+  /** Full initiator object (type, url, line, stack trace). */
+  initiator?: Initiator;
 }
 
 function headersToList(headers: Record<string, string> | undefined): CapturedHeader[] {
@@ -125,6 +133,14 @@ export class DebuggerCapture {
         maxResourceBufferSize: 10 * 1024 * 1024,
         maxTotalBufferSize: 50 * 1024 * 1024,
       });
+      // Force-disable cache so response bodies are always fetched fresh from the
+      // network (never served from disk cache where getResponseBody returns empty).
+      await chrome.debugger.sendCommand({ tabId }, 'Network.setCacheDisabled', {
+        cacheDisabled: true,
+      });
+      // Enable Page domain to capture lifecycle events (navigation, DOMContentLoaded,
+      // load) for timeline context.
+      await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
       // Flatten OOPIFs + workers into child sessions so their network traffic
       // (captcha endpoints, cross-origin flows) is visible to us.
       await chrome.debugger.sendCommand({ tabId }, 'Target.setAutoAttach', {
@@ -203,6 +219,12 @@ export class DebuggerCapture {
 
     try {
       await chrome.debugger.sendCommand(childTarget, 'Network.enable', {});
+      // Force-disable cache on child sessions too (OOPIFs, workers).
+      await chrome.debugger.sendCommand(childTarget, 'Network.setCacheDisabled', {
+        cacheDisabled: true,
+      });
+      // Enable Page domain on child sessions for lifecycle events.
+      await chrome.debugger.sendCommand(childTarget, 'Page.enable');
       // Auto-attach is NOT recursive — re-arm on the child so nested OOPIFs/workers
       // (e.g. the reCAPTCHA challenge bframe inside the anchor iframe) attach too.
       await chrome.debugger.sendCommand(childTarget, 'Target.setAutoAttach', {
@@ -294,12 +316,32 @@ export class DebuggerCapture {
       sessionTarget = { tabId: source.tabId };
     }
 
+    // Page lifecycle events are delivered on the session; dispatch them for timeline context.
+    if (method === 'Page.frameNavigated') {
+      this.onPageFrameNavigated(tabId, params);
+      return;
+    }
+    if (method === 'Page.domContentEventFired') {
+      this.onPageLifecycleEvent(tabId, params, 'domContentLoaded');
+      return;
+    }
+    if (method === 'Page.loadEventFired') {
+      this.onPageLifecycleEvent(tabId, params, 'load');
+      return;
+    }
+
     switch (method) {
       case 'Network.requestWillBeSent':
         this.onRequestWillBeSent(tabId, sessionId, sessionTarget, params);
         break;
+      case 'Network.requestWillBeSentExtraInfo':
+        this.onRequestWillBeSentExtraInfo(sessionId, params);
+        break;
       case 'Network.responseReceived':
         this.onResponseReceived(sessionId, params);
+        break;
+      case 'Network.responseReceivedExtraInfo':
+        this.onResponseReceivedExtraInfo(sessionId, params);
         break;
       case 'Network.loadingFinished':
         void this.onLoadingFinished(sessionId, params);
@@ -313,14 +355,23 @@ export class DebuggerCapture {
       case 'Network.webSocketWillSendHandshakeRequest':
         this.onWebSocketWillSendHandshakeRequest(sessionId, params);
         break;
+      case 'Network.webSocketWillSendHandshakeResponse':
+        this.onWebSocketWillSendHandshakeResponse(sessionId, params);
+        break;
       case 'Network.webSocketFrameSent':
         this.onWebSocketFrame(sessionId, params, 'sent');
         break;
       case 'Network.webSocketFrameReceived':
         this.onWebSocketFrame(sessionId, params, 'received');
         break;
+      case 'Network.webSocketFrameError':
+        this.onWebSocketFrameError(sessionId, params);
+        break;
       case 'Network.webSocketClosed':
         this.onWebSocketClosed(sessionId, params);
+        break;
+      case 'Network.eventSourceMessageReceived':
+        this.onEventSourceMessage(sessionId, params);
         break;
     }
   };
@@ -379,6 +430,32 @@ export class DebuggerCapture {
     const startedAt = (p.wallTime ?? Date.now() / 1000) * 1000;
     const startMonotonicSec = typeof p.timestamp === 'number' ? p.timestamp : undefined;
     const id = key;
+    // Capture the full initiator object (type, url, lineNumber, columnNumber, stack)
+    // instead of just the type string — enables tracing request origins.
+    const initiator: Initiator | undefined = p.initiator
+      ? {
+          type: String(p.initiator.type ?? ''),
+          ...(p.initiator.url != null ? { url: String(p.initiator.url) } : {}),
+          ...(typeof p.initiator.lineNumber === 'number'
+            ? { lineNumber: p.initiator.lineNumber }
+            : {}),
+          ...(typeof p.initiator.columnNumber === 'number'
+            ? { columnNumber: p.initiator.columnNumber }
+            : {}),
+          ...(p.initiator.stack?.callFrames
+            ? {
+                stack: {
+                  callFrames: p.initiator.stack.callFrames.map((cf: any) => ({
+                    url: String(cf?.url ?? ''),
+                    functionName: String(cf?.functionName ?? ''),
+                    lineNumber: typeof cf?.lineNumber === 'number' ? cf.lineNumber : 0,
+                    columnNumber: typeof cf?.columnNumber === 'number' ? cf.columnNumber : 0,
+                  })),
+                },
+              }
+            : {}),
+        }
+      : undefined;
     const inflight: InFlight = {
       id,
       key,
@@ -392,7 +469,7 @@ export class DebuggerCapture {
       startMonotonicSec,
       requestHeaders: headersToList(p.request.headers),
       requestBody: typeof p.request.postData === 'string' ? p.request.postData : undefined,
-      initiator: p.initiator?.type,
+      initiator,
     };
     this.trackInFlight(inflight);
     this.listener.onRequest({
@@ -420,6 +497,66 @@ export class DebuggerCapture {
       responseHeaders: headersToList(r.headers),
       responseMimeType: r.mimeType,
       fromCache: !!r.fromDiskCache,
+      // Server metadata — IP, port, protocol (e.g. "h2", "http/1.1").
+      ...(typeof r.remoteIPAddress === 'string' ? { remoteAddress: r.remoteIPAddress } : {}),
+      ...(typeof r.remotePort === 'number' ? { remotePort: r.remotePort } : {}),
+      ...(typeof r.protocol === 'string' ? { protocol: r.protocol } : {}),
+    });
+  }
+
+  /**
+   * Network.requestWillBeSentExtraInfo — carries the ACTUAL headers sent over
+   * the wire (including cookies the browser added after requestWillBeSent).
+   * Merges real headers + extracts cookies into requestCookies.
+   */
+  private onRequestWillBeSentExtraInfo(sessionId: string | undefined, p: any): void {
+    const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
+    if (!f) return;
+    const fullHeaders = headersToList(p.headers);
+    // Extract Cookie header values into a structured list.
+    const cookies: CapturedHeader[] = [];
+    for (const h of fullHeaders) {
+      if (h.name.toLowerCase() === 'cookie') {
+        for (const part of h.value.split(';')) {
+          const eq = part.indexOf('=');
+          if (eq > 0) {
+            cookies.push({
+              name: part.slice(0, eq).trim(),
+              value: part.slice(eq + 1).trim(),
+            });
+          }
+        }
+      }
+    }
+    this.listener.onUpdate(f.id, {
+      requestHeaders: fullHeaders,
+      ...(cookies.length ? { requestCookies: cookies } : {}),
+    });
+  }
+
+  /**
+   * Network.responseReceivedExtraInfo — carries the full response headers
+   * including Set-Cookie (which Chrome strips from responseReceived).
+   * Merges real headers + extracts Set-Cookie into responseCookies.
+   */
+  private onResponseReceivedExtraInfo(sessionId: string | undefined, p: any): void {
+    const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
+    if (!f) return;
+    const fullHeaders = headersToList(p.headers);
+    // Extract Set-Cookie header values into a structured list.
+    const cookies: CapturedHeader[] = [];
+    for (const h of fullHeaders) {
+      if (h.name.toLowerCase() === 'set-cookie') {
+        const eq = h.value.indexOf('=');
+        cookies.push({
+          name: eq > 0 ? h.value.slice(0, eq).trim() : 'cookie',
+          value: h.value,
+        });
+      }
+    }
+    this.listener.onUpdate(f.id, {
+      responseHeaders: fullHeaders,
+      ...(cookies.length ? { responseCookies: cookies } : {}),
     });
   }
 
@@ -515,7 +652,9 @@ export class DebuggerCapture {
       host: parseHost(url),
       startedAt,
       requestHeaders: [],
-      initiator: p.initiator?.type,
+      initiator: p.initiator
+        ? { type: String(p.initiator.type ?? '') } as Initiator
+        : undefined,
     };
     this.trackInFlight(inflight);
     this.listener.onRequest({
@@ -577,6 +716,80 @@ export class DebuggerCapture {
       ...(opcode === 2 ? { isBinary: true } : {}),
     };
     this.listener.onWsMessage(f.id, msg);
+  }
+
+  private onWebSocketWillSendHandshakeResponse(sessionId: string | undefined, p: any): void {
+    const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
+    if (!f) return;
+    // This event carries the server's handshake response headers + status.
+    const r = p.response ?? {};
+    this.listener.onUpdate(f.id, {
+      ...(typeof r.status === 'number' ? { wsStatus: r.status } : {}),
+      ...(typeof r.statusText === 'string' ? { wsStatusText: r.statusText } : {}),
+      ...(r.headers ? { wsResponseHeaders: headersToList(r.headers) } : {}),
+    });
+  }
+
+  private onWebSocketFrameError(sessionId: string | undefined, p: any): void {
+    const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
+    if (!f) return;
+    // Capture the protocol-level error text for the WebSocket connection.
+    this.listener.onUpdate(f.id, {
+      wsError: typeof p.errorMessage === 'string' ? p.errorMessage : 'WebSocket frame error',
+    });
+  }
+
+  private onEventSourceMessage(sessionId: string | undefined, p: any): void {
+    const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
+    if (!f) return;
+    // Build an SSE message entry mirroring the WS message pattern.
+    const msg: EventSourceMessage = {
+      eventName: typeof p.eventName === 'string' ? p.eventName : '',
+      eventId: typeof p.eventId === 'string' ? p.eventId : '',
+      data: typeof p.data === 'string' ? p.data : '',
+      timestamp:
+        typeof p.timestamp === 'number'
+          ? f.startMonotonicSec != null
+            ? cdpDuration({
+                startedAtEpochMs: f.startedAt,
+                startMonotonicSec: f.startMonotonicSec,
+                endMonotonicSec: p.timestamp,
+              }).endedAt
+            : Date.now()
+          : Date.now(),
+    };
+    this.listener.onSseMessage?.(f.id, msg);
+  }
+
+  private onPageFrameNavigated(tabId: number | undefined, p: any): void {
+    if (tabId == null) return;
+    const frame = p?.frame;
+    if (!frame) return;
+    // Only emit navigation events for the top-level frame to avoid noise from
+    // every subframe navigate.
+    if (!frame.parentId) {
+      this.listener.onPageEvent?.(tabId, {
+        type: 'navigation',
+        timestamp: Date.now(),
+        url: typeof frame.url === 'string' ? frame.url : undefined,
+        frameId: typeof frame.id === 'string' ? frame.id : undefined,
+      });
+    }
+  }
+
+  private onPageLifecycleEvent(
+    tabId: number | undefined,
+    p: any,
+    type: 'domContentLoaded' | 'load',
+  ): void {
+    if (tabId == null) return;
+    this.listener.onPageEvent?.(tabId, {
+      type,
+      timestamp:
+        typeof p.timestamp === 'number'
+          ? Date.now() // Page lifecycle timestamps are monotonic; use epoch for simplicity
+          : Date.now(),
+    });
   }
 
   private onWebSocketClosed(sessionId: string | undefined, p: any): void {

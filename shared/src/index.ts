@@ -277,6 +277,42 @@ export interface WebSocketMessage {
   isBinary?: boolean;
 }
 
+/** A single Server-Sent Events message captured from an EventSource connection. */
+export interface EventSourceMessage {
+  eventName: string;
+  eventId: string;
+  data: string;
+  timestamp: number;
+}
+
+/** A page lifecycle event (navigation, DOMContentLoaded, load) for timeline context. */
+export interface PageEvent {
+  type: 'navigation' | 'domContentLoaded' | 'load';
+  timestamp: number;
+  url?: string;
+  frameId?: string;
+}
+
+/**
+ * Full CDP initiator — the request's origin context. Backward-compatible:
+ * older captures and imported HARs may carry a bare string (e.g. "parser",
+ * "app"); new captures use the full object with stack trace.
+ */
+export interface Initiator {
+  type: string;
+  url?: string;
+  lineNumber?: number;
+  columnNumber?: number;
+  stack?: {
+    callFrames: Array<{
+      url: string;
+      functionName: string;
+      lineNumber: number;
+      columnNumber: number;
+    }>;
+  };
+}
+
 export interface CapturedRequest {
   id: string;
   tabId: number;
@@ -298,18 +334,41 @@ export interface CapturedRequest {
   status?: number;
   statusText?: string;
   requestHeaders: CapturedHeader[];
+  /** Real cookies sent with the request (from requestWillBeSentExtraInfo). */
+  requestCookies?: CapturedHeader[];
   requestBody?: string;
   responseHeaders: CapturedHeader[];
+  /** Set-Cookie values from the response (from responseReceivedExtraInfo). */
+  responseCookies?: CapturedHeader[];
   responseBody?: string;
   responseMimeType?: string;
   /** true when responseBody is base64-encoded (binary body); responseMimeType keeps the real content-type. */
   responseBodyBase64?: boolean;
   responseSize?: number;
   fromCache?: boolean;
-  initiator?: string;
+  /** Server IP address (from responseReceived). */
+  remoteAddress?: string;
+  /** Server port (from responseReceived). */
+  remotePort?: number;
+  /** Network protocol — e.g. "h2", "http/1.1" (from responseReceived). */
+  protocol?: string;
+  /** Full initiator context (type, url, line, stack). May be a bare string for legacy rows. */
+  initiator?: Initiator | string;
   failed?: boolean;
   errorText?: string;
   wsMessages?: WebSocketMessage[];
+  /** WebSocket protocol error text (from webSocketFrameError). */
+  wsError?: string;
+  /** WebSocket handshake response headers (from webSocketWillSendHandshakeResponse). */
+  wsResponseHeaders?: CapturedHeader[];
+  /** WebSocket handshake response status code. */
+  wsStatus?: number;
+  /** WebSocket handshake response status text. */
+  wsStatusText?: string;
+  /** SSE messages for EventSource connections. */
+  eventSourceMessages?: EventSourceMessage[];
+  /** Page lifecycle events observed during this request's tab session. */
+  pageEvents?: PageEvent[];
 }
 
 export type CaptchaType =
@@ -346,6 +405,8 @@ export type BridgeMessage =
   | { kind: 'request'; payload: CapturedRequest }
   | { kind: 'request-update'; id: string; patch: Partial<CapturedRequest> }
   | { kind: 'ws-message'; id: string; message: WebSocketMessage }
+  | { kind: 'sse-message'; id: string; message: EventSourceMessage }
+  | { kind: 'page-event'; tabId: number; event: PageEvent }
   | { kind: 'allowlist-sync'; domains: string[] }
   | { kind: 'set-allowlist'; domains: string[] }
   | { kind: 'set-capture'; enabled: boolean }
@@ -501,7 +562,7 @@ export function buildWsRow(req: WsRowInput, publicId: string): CapturedRequest {
     startedAt: req.timingEvents?.startTime ?? Date.now(),
     requestHeaders: rawHeadersToList(req.rawHeaders),
     responseHeaders: [],
-    initiator: 'app',
+    initiator: { type: 'app' } as Initiator,
     wsMessages: [],
   };
 }
@@ -650,6 +711,13 @@ export async function runAttach(
  * documented memory ceiling (drop-oldest keeps the newest frames).
  */
 export const MAX_WS_MESSAGES = 5000;
+
+/**
+ * Per-request cap on `eventSourceMessages` — mirrors MAX_WS_MESSAGES.
+ * Without a bound, a chatty SSE stream grows `eventSourceMessages` without limit;
+ * 5000 messages per row is a predictable, documented memory ceiling (drop-oldest).
+ */
+export const MAX_SSE_MESSAGES = 5000;
 
 /**
  * Append `item` to `arr`, then drop the oldest entries so `arr.length <= max`

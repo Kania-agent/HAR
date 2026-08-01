@@ -2,7 +2,7 @@ import { Fragment, useState, type ReactNode } from 'react';
 import { Tabs, TextInput, Text } from '@mantine/core';
 import type { CapturedRequest, CapturedHeader } from '@har-suite/shared';
 
-type Tab = 'headers' | 'payload' | 'response' | 'ws' | 'script';
+type Tab = 'headers' | 'payload' | 'response' | 'ws' | 'sse' | 'script';
 
 function HeaderTable({ headers, highlight }: { headers: CapturedHeader[]; highlight?: string }) {
   if (!headers.length) return <Text c="dimmed">(no headers)</Text>;
@@ -59,11 +59,28 @@ export default function RequestDetail({
 }) {
   const [tab, setTab] = useState<Tab>('headers');
   const [wsFilter, setWsFilter] = useState('');
+  const [sseFilter, setSseFilter] = useState('');
   const isWs = request.type === 'WebSocket';
+  const isSse = request.type === 'EventSource';
 
   const filteredWs = (request.wsMessages ?? []).filter(
     (m) => !wsFilter || m.payload.toLowerCase().includes(wsFilter.toLowerCase()),
   );
+
+  const filteredSse = (request.eventSourceMessages ?? []).filter(
+    (m) => !sseFilter || m.data.toLowerCase().includes(sseFilter.toLowerCase()),
+  );
+
+  // Format initiator for display — may be a string (legacy) or object.
+  const initiatorDisplay = (() => {
+    if (!request.initiator) return '-';
+    if (typeof request.initiator === 'string') return request.initiator;
+    const ini = request.initiator;
+    let s = ini.type;
+    if (ini.url) s += ` · ${ini.url}`;
+    if (ini.lineNumber != null) s += `:${ini.lineNumber}`;
+    return s;
+  })();
 
   const contentType = request.requestHeaders.find(
     (h) => h.name.toLowerCase() === 'content-type',
@@ -89,7 +106,23 @@ export default function RequestDetail({
           {request.durationMs != null ? `${request.durationMs.toFixed(0)} ms` : '-'}
         </div>
         <div className="k">Initiator</div>
-        <div className="v">{request.initiator ?? '-'}</div>
+        <div className="v">{initiatorDisplay}</div>
+        {request.remoteAddress && (
+          <>
+            <div className="k">Server</div>
+            <div className="v">
+              {request.remoteAddress}
+              {request.remotePort != null ? `:${request.remotePort}` : ''}
+              {request.protocol ? ` (${request.protocol})` : ''}
+            </div>
+          </>
+        )}
+        {request.wsError && (
+          <>
+            <div className="k">WS Error</div>
+            <div className="v" style={{ color: 'var(--mantine-color-red-text)' }}>{request.wsError}</div>
+          </>
+        )}
       </div>
 
       <Tabs value={tab} onChange={(v) => setTab((v as Tab) ?? 'headers')} mb="sm">
@@ -99,6 +132,7 @@ export default function RequestDetail({
           {!isWs && <Tabs.Tab value="response">Response</Tabs.Tab>}
           {request.type === 'Script' && <Tabs.Tab value="script">Script</Tabs.Tab>}
           {isWs && <Tabs.Tab value="ws">Messages ({request.wsMessages?.length ?? 0})</Tabs.Tab>}
+          {isSse && <Tabs.Tab value="sse">SSE ({request.eventSourceMessages?.length ?? 0})</Tabs.Tab>}
         </Tabs.List>
 
         <Tabs.Panel value="headers" pt="sm">
@@ -176,6 +210,38 @@ export default function RequestDetail({
                     {highlightText(
                       m.payload.slice(0, 4000) + (m.payload.length > 4000 ? '...' : ''),
                       wsFilter || highlight,
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </Tabs.Panel>
+        )}
+        {isSse && (
+          <Tabs.Panel value="sse" pt="sm">
+            <TextInput
+              placeholder="Filter SSE messages…"
+              value={sseFilter}
+              onChange={(e) => setSseFilter(e.currentTarget.value)}
+              mb="sm"
+            />
+            {filteredSse.length === 0 ? (
+              <Text c="dimmed">
+                {(request.eventSourceMessages ?? []).length === 0
+                  ? '(no SSE messages yet)'
+                  : '(no messages match filter)'}
+              </Text>
+            ) : (
+              filteredSse.map((m, i) => (
+                <div key={i} className="ws-frame received">
+                  <div className="meta">
+                    {m.eventName || '(default)'} · id: {m.eventId || '-'} ·{' '}
+                    {new Date(m.timestamp).toISOString()}
+                  </div>
+                  <div>
+                    {highlightText(
+                      m.data.slice(0, 4000) + (m.data.length > 4000 ? '...' : ''),
+                      sseFilter || highlight,
                     )}
                   </div>
                 </div>

@@ -15,11 +15,13 @@ import {
   setStickyTabs,
   setToken,
 } from './store.js';
-import { hostMatchesAllowlist, pushBounded, MAX_WS_MESSAGES } from '@har-suite/shared';
+import { hostMatchesAllowlist, pushBounded, MAX_WS_MESSAGES, MAX_SSE_MESSAGES } from '@har-suite/shared';
 import type {
   CaptureScope,
   CapturedRequest,
   WebSocketMessage,
+  EventSourceMessage,
+  PageEvent,
   CaptchaDetection,
   CaptchaType,
 } from '@har-suite/shared';
@@ -142,6 +144,17 @@ const capture = new DebuggerCapture(
         pushBounded(cur.wsMessages, message, MAX_WS_MESSAGES);
       }
       bridge.send({ kind: 'ws-message', id, message });
+    },
+    onSseMessage: (id, message: EventSourceMessage) => {
+      const cur = recentRequests.get(id);
+      if (cur) {
+        cur.eventSourceMessages = cur.eventSourceMessages ?? [];
+        pushBounded(cur.eventSourceMessages, message, MAX_SSE_MESSAGES);
+      }
+      bridge.send({ kind: 'sse-message', id, message });
+    },
+    onPageEvent: (tabId: number, event: PageEvent) => {
+      bridge.send({ kind: 'page-event', tabId, event });
     },
     onCaptchaUrl: (url, tabId, requestId, requestBody) => {
       // Runs for ALL request types including Script/Document that HAR capture

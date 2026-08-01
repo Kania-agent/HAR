@@ -46,6 +46,8 @@ import type {
   CapturedRequest,
   BridgeMessage,
   WebSocketMessage,
+  EventSourceMessage,
+  PageEvent,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -161,6 +163,23 @@ function applyWsMessage(id: string, msg: WebSocketMessage) {
   }
 }
 
+function applySseMessage(id: string, msg: EventSourceMessage) {
+  const cur = requests.get(id);
+  if (cur) {
+    cur.eventSourceMessages = cur.eventSourceMessages ?? [];
+    cur.eventSourceMessages.push(msg);
+    persistUpdate(cur);
+    sendToRenderer('capture:sse-message', { id, message: msg });
+  }
+}
+
+function applyPageEvent(tabId: number, event: PageEvent) {
+  // Page events are not tied to a single request; broadcast to renderer for
+  // timeline display. They are not persisted per-request but could be added
+  // to a dedicated page_events table in the future.
+  sendToRenderer('capture:page-event', { tabId, event });
+}
+
 // Single ingestion surface shared by BOTH capture sources (the Chrome-extension
 // bridge and the native-app MITM proxy). App rows therefore get the same
 // immediate-INSERT + batched-update + renderer push as web rows.
@@ -205,6 +224,12 @@ bridge.on('message', (msg: BridgeMessage) => {
       break;
     case 'ws-message':
       applyWsMessage(msg.id, msg.message);
+      break;
+    case 'sse-message':
+      applySseMessage(msg.id, msg.message);
+      break;
+    case 'page-event':
+      applyPageEvent(msg.tabId, msg.event);
       break;
     case 'status':
       allowlist = msg.allowlist;

@@ -59,7 +59,11 @@ function harEntryToRequest(entry: any, idx: number): CapturedRequest {
         ? 'application/octet-stream;base64'
         : (content.mimeType ?? undefined),
     responseSize: typeof res.bodySize === 'number' && res.bodySize >= 0 ? res.bodySize : undefined,
-    initiator: typeof entry._initiator === 'string' ? entry._initiator : undefined,
+    initiator: typeof entry._initiator === 'string'
+      ? entry._initiator
+      : entry._initiator && typeof entry._initiator === 'object'
+        ? { type: String(entry._initiator.type ?? '') }
+        : undefined,
     wsMessages: wsMessages.length ? wsMessages : undefined,
   };
 }

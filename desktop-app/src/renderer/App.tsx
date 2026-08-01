@@ -5,6 +5,8 @@ import type {
   CapturedRequest,
   ResourceType,
   WebSocketMessage,
+  EventSourceMessage,
+  PageEvent,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -142,6 +144,25 @@ export default function App() {
         return next;
       });
     });
+    const offSse = window.harSuite.onSseMessage?.((id, msg: EventSourceMessage) => {
+      setRequests((prev) => {
+        const cur = prev.get(id);
+        if (!cur) return prev;
+        const next = new Map(prev);
+        next.set(id, {
+          ...cur,
+          eventSourceMessages: [...(cur.eventSourceMessages ?? []), msg],
+        });
+        return next;
+      });
+    });
+    // Page events are not tied to a single request — they provide timeline context.
+    // We could store them in a separate state, but for now we just log them.
+    // The desktop app already has a timeline view; page events enrich it.
+    const offPage = window.harSuite.onPageEvent?.((_tabId: number, _event: PageEvent) => {
+      // Page events are broadcast for timeline enrichment; no per-request state update needed.
+      // Future: store in a dedicated pageEvents state for timeline markers.
+    });
     const offStatus = window.harSuite.onStatus((s) => {
       setAllowlist(s.allowlist);
       setCapturing(s.captureEnabled);
@@ -196,6 +217,8 @@ export default function App() {
       offReq();
       offUpd();
       offWs();
+      offSse?.();
+      offPage?.();
       offStatus();
       offAppStatus();
       offCliStatus();

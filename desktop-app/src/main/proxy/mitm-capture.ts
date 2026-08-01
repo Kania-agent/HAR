@@ -5,6 +5,7 @@ import type {
   CaptureScope,
   WebSocketMessage,
   CaptchaDetection,
+  Initiator,
 } from '@har-suite/shared';
 import {
   inferResourceType,
@@ -222,7 +223,7 @@ export class MitmCapture {
       startedAt,
       requestHeaders: rawHeadersToList(req.rawHeaders),
       responseHeaders: [],
-      initiator: 'app',
+      initiator: { type: 'app' } as Initiator,
     };
 
     // Attach request body asynchronously (decoded), then emit.
