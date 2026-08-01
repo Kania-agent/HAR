@@ -19,9 +19,8 @@ import {
 import type { CaPair } from './ca-trust';
 import { lookupProcess } from './process-resolver';
 
-// Bodies larger than this are truncated to keep memory/db sane. Mirrors the
-// spirit of the CDP path (Chrome also caps retained bodies).
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
+// Bodies are captured in full — no truncation (capture on personal machine).
+const MAX_BODY_BYTES = 0;
 
 export interface CaptureSink {
   onRequest(req: CapturedRequest): void;
@@ -266,7 +265,8 @@ export class MitmCapture {
           durationMs,
         };
         if (buf && buf.length) {
-          const sliced = buf.length > MAX_BODY_BYTES ? buf.subarray(0, MAX_BODY_BYTES) : buf;
+          // MAX_BODY_BYTES=0 means unlimited — no truncation.
+          const sliced = MAX_BODY_BYTES > 0 && buf.length > MAX_BODY_BYTES ? buf.subarray(0, MAX_BODY_BYTES) : buf;
           if (isProbablyText(mimeType)) {
             patch.responseBody = sliced.toString('utf8');
           } else {
@@ -356,7 +356,8 @@ export class MitmCapture {
 }
 
 function truncate(text: string): string {
-  if (text.length <= MAX_BODY_BYTES) return text;
+  // MAX_BODY_BYTES=0 means unlimited — no truncation.
+  if (MAX_BODY_BYTES <= 0 || text.length <= MAX_BODY_BYTES) return text;
   return text.slice(0, MAX_BODY_BYTES);
 }
 

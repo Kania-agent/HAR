@@ -587,7 +587,7 @@ export function hostMatchesAllowlist(host: string, allowlist: string[]): boolean
  * path's own in-flight cap). The oldest entry is evicted once the limit is hit
  * so abandoned/aborted streams can't leak memory forever.
  */
-export const INFLIGHT_LIMIT = 4000;
+export const INFLIGHT_LIMIT = 0; // 0 = unlimited (capture on personal machine)
 
 /** Extract the host (`host:port` when present) from a URL; '' when unparseable. */
 function hostOf(url: string): string {
@@ -621,7 +621,8 @@ export class IdRegistry {
 
   /** Register a connection/event id → namespaced publicId, evicting oldest at the limit. */
   remember(eventId: string, publicId: string): void {
-    if (this.ids.size >= this.limit) {
+    // limit=0 means unlimited — never evict (personal machine capture).
+    if (this.limit > 0 && this.ids.size >= this.limit) {
       // Drop the oldest entry (insertion order) to bound memory — matches rememberId.
       const oldest = this.ids.keys().next().value;
       if (oldest !== undefined) this.ids.delete(oldest);
@@ -824,14 +825,14 @@ export async function runAttach(
  * socket grows `wsMessages` without limit; 5000 frames per row is a predictable,
  * documented memory ceiling (drop-oldest keeps the newest frames).
  */
-export const MAX_WS_MESSAGES = 5000;
+export const MAX_WS_MESSAGES = 0; // 0 = unlimited (capture on personal machine)
 
 /**
  * Per-request cap on `eventSourceMessages` — mirrors MAX_WS_MESSAGES.
  * Without a bound, a chatty SSE stream grows `eventSourceMessages` without limit;
  * 5000 messages per row is a predictable, documented memory ceiling (drop-oldest).
  */
-export const MAX_SSE_MESSAGES = 5000;
+export const MAX_SSE_MESSAGES = 0; // 0 = unlimited (capture on personal machine)
 
 /**
  * Append `item` to `arr`, then drop the oldest entries so `arr.length <= max`
@@ -840,7 +841,8 @@ export const MAX_SSE_MESSAGES = 5000;
  */
 export function pushBounded<T>(arr: T[], item: T, max: number): T[] {
   arr.push(item);
-  if (arr.length > max) arr.splice(0, arr.length - max); // drop oldest until <= max
+  // max=0 means unlimited — never trim (personal machine capture).
+  if (max > 0 && arr.length > max) arr.splice(0, arr.length - max); // drop oldest until <= max
   return arr;
 }
 

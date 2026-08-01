@@ -37,10 +37,9 @@ const CHILD_FILTER = [
   { type: 'service_worker' },
 ];
 
-// Cap on concurrently in-flight requests we track. Top-frame navigations abandon
-// in-flight root requests (no loadingFinished fires), so without a bound the map
-// slowly leaks. 2000 is generous for any real page.
-const INFLIGHT_LIMIT = 2000;
+// Cap on concurrently in-flight requests we track. 0 = unlimited (capture on
+// personal machine). Set to a positive number for memory-constrained environments.
+const INFLIGHT_LIMIT = 0;
 
 type Listener = {
   onRequest: (req: CapturedRequest) => void;
@@ -441,13 +440,10 @@ export class DebuggerCapture {
 
   private trackInFlight(f: InFlight): void {
     this.inFlight.set(f.key, f);
-    if (this.inFlight.size > INFLIGHT_LIMIT) {
+    // INFLIGHT_LIMIT=0 means unlimited — never evict (personal machine capture).
+    if (INFLIGHT_LIMIT > 0 && this.inFlight.size > INFLIGHT_LIMIT) {
       const victim = pickEvictionKey(this.inFlight.values());
       if (victim !== undefined) this.inFlight.delete(victim);
-      // Documented all-WS fallback: when every in-flight entry is an open WebSocket
-      // (victim === undefined), do NOT evict — let the map briefly exceed the soft cap
-      // so a live socket isn't dropped. Concurrent WS count is small in practice and
-      // per-WS frames are bounded by MAX_WS_MESSAGES.
     }
   }
 
