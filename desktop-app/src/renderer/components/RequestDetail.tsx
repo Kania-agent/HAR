@@ -123,6 +123,91 @@ export default function RequestDetail({
             <div className="v" style={{ color: 'var(--mantine-color-red-text)' }}>{request.wsError}</div>
           </>
         )}
+        {request.priority && (
+          <>
+            <div className="k">Priority</div>
+            <div className="v">{request.priority}</div>
+          </>
+        )}
+        {request.connectionId != null && (
+          <>
+            <div className="k">Connection</div>
+            <div className="v">
+              #{request.connectionId}
+              {request.connectionReused != null
+                ? request.connectionReused
+                  ? ' (reused)'
+                  : ' (new)'
+                : ''}
+            </div>
+          </>
+        )}
+        {request.encodedDataLength != null && (
+          <>
+            <div className="k">Wire Size</div>
+            <div className="v">{request.encodedDataLength.toLocaleString()} bytes</div>
+          </>
+        )}
+        {request.blockedReason && (
+          <>
+            <div className="k">Blocked</div>
+            <div className="v" style={{ color: 'var(--mantine-color-red-text)' }}>{request.blockedReason}</div>
+          </>
+        )}
+        {request.corsErrorStatus && (
+          <>
+            <div className="k">CORS Error</div>
+            <div className="v" style={{ color: 'var(--mantine-color-red-text)' }}>{request.corsErrorStatus}</div>
+          </>
+        )}
+        {request.securityDetails && (
+          <>
+            <div className="k">TLS</div>
+            <div className="v">
+              {request.securityDetails.tlsVersion ?? request.securityDetails.protocol ?? '-'}
+              {request.securityDetails.cipher ? ` · ${request.securityDetails.cipher}` : ''}
+            </div>
+            {request.securityDetails.issuer && (
+              <>
+                <div className="k">Cert Issuer</div>
+                <div className="v">{request.securityDetails.issuer}</div>
+              </>
+            )}
+            {request.securityDetails.validTo && (
+              <>
+                <div className="k">Cert Expiry</div>
+                <div className="v">{new Date(request.securityDetails.validTo).toISOString().slice(0, 10)}</div>
+              </>
+            )}
+          </>
+        )}
+        {request.resourceTiming && (
+          <>
+            <div className="k">Timing</div>
+            <div className="v">
+              {[
+                request.resourceTiming.dnsEnd != null && request.resourceTiming.dnsStart != null
+                  ? `DNS ${Math.max(0, request.resourceTiming.dnsEnd - request.resourceTiming.dnsStart).toFixed(0)}ms`
+                  : null,
+                request.resourceTiming.connectEnd != null && request.resourceTiming.connectStart != null
+                  ? `TCP ${Math.max(0, request.resourceTiming.connectEnd - request.resourceTiming.connectStart).toFixed(0)}ms`
+                  : null,
+                request.resourceTiming.tlsEnd != null && request.resourceTiming.tlsStart != null
+                  ? `TLS ${Math.max(0, request.resourceTiming.tlsEnd - request.resourceTiming.tlsStart).toFixed(0)}ms`
+                  : null,
+                request.resourceTiming.ttfbMs != null
+                  ? `TTFB ${request.resourceTiming.ttfbMs.toFixed(0)}ms`
+                  : null,
+              ].filter(Boolean).join(' · ') || '-'}
+            </div>
+          </>
+        )}
+        {request.redirects && request.redirects.length > 0 && (
+          <>
+            <div className="k">Redirects</div>
+            <div className="v">{request.redirects.length} hop(s)</div>
+          </>
+        )}
       </div>
 
       <Tabs value={tab} onChange={(v) => setTab((v as Tab) ?? 'headers')} mb="sm">

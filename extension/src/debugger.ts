@@ -9,6 +9,9 @@ import {
   type EventSourceMessage,
   type Initiator,
   type PageEvent,
+  type RedirectHop,
+  type ResourceTiming,
+  type SecurityDetails,
   type ResourceType,
   type WebSocketMessage,
 } from '@har-suite/shared';
@@ -78,6 +81,10 @@ interface InFlight {
   requestBody?: string;
   /** Full initiator object (type, url, line, stack trace). */
   initiator?: Initiator;
+  /** True when Chrome sets hasPostData but body is not inline (needs getRequestPostData). */
+  hasPostData?: boolean;
+  /** Accumulated redirect hops before the final request. */
+  redirects?: RedirectHop[];
 }
 
 function headersToList(headers: Record<string, string> | undefined): CapturedHeader[] {
@@ -420,10 +427,22 @@ export class DebuggerCapture {
     if (p.redirectResponse) {
       const existing = this.inFlight.get(key);
       if (existing) {
+        // Accumulate the redirect hop — full URL, status, headers, timing.
+        const hop: RedirectHop = {
+          url: existing.url,
+          status: typeof p.redirectResponse.status === 'number' ? p.redirectResponse.status : 0,
+          statusText: typeof p.redirectResponse.statusText === 'string' ? p.redirectResponse.statusText : '',
+          headers: headersToList(p.redirectResponse.headers),
+          timestamp: Date.now(),
+        };
+        const redirects = [...(existing.redirects ?? []), hop];
         this.listener.onUpdate(existing.id, {
           status: p.redirectResponse.status,
           statusText: p.redirectResponse.statusText,
+          redirects,
+          ...(p.redirectResponse.headers ? { responseHeaders: headersToList(p.redirectResponse.headers) } : {}),
         });
+        existing.redirects = redirects;
       }
     }
 
@@ -456,6 +475,7 @@ export class DebuggerCapture {
             : {}),
         }
       : undefined;
+    const hasPostData = !!p.request.hasPostData && typeof p.request.postData !== 'string';
     const inflight: InFlight = {
       id,
       key,
@@ -470,6 +490,8 @@ export class DebuggerCapture {
       requestHeaders: headersToList(p.request.headers),
       requestBody: typeof p.request.postData === 'string' ? p.request.postData : undefined,
       initiator,
+      hasPostData,
+      redirects: this.inFlight.get(key)?.redirects,
     };
     this.trackInFlight(inflight);
     this.listener.onRequest({
@@ -484,6 +506,10 @@ export class DebuggerCapture {
       requestBody: inflight.requestBody,
       responseHeaders: [],
       initiator: inflight.initiator,
+      // Chrome's resource priority (VeryLow/Low/Medium/High/VeryHigh).
+      ...(typeof p.request.initialPriority === 'string' ? { priority: p.request.initialPriority } : {}),
+      ...(hasPostData ? { hasPostData: true } : {}),
+      ...(inflight.redirects?.length ? { redirects: inflight.redirects } : {}),
     });
   }
 
@@ -491,6 +517,41 @@ export class DebuggerCapture {
     const f = this.inFlight.get(this.keyFor(sessionId, p.requestId));
     if (!f) return;
     const r = p.response;
+    // Extract TLS security details (protocol, cipher, cert issuer/subject/SAN, validity).
+    const sd = r.securityDetails;
+    const securityDetails: SecurityDetails | undefined = sd
+      ? {
+          ...(typeof sd.protocol === 'string' ? { protocol: sd.protocol } : {}),
+          ...(typeof sd.keyExchange === 'string' ? { keyExchange: sd.keyExchange } : {}),
+          ...(typeof sd.keyExchangeGroup === 'string' ? { keyExchangeGroup: sd.keyExchangeGroup } : {}),
+          ...(typeof sd.cipher === 'string' ? { cipher: sd.cipher } : {}),
+          ...(typeof sd.mac === 'string' ? { mac: sd.mac } : {}),
+          ...(sd.issuer?.commonName ? { issuer: String(sd.issuer.commonName) } : {}),
+          ...(sd.subject?.commonName ? { subject: String(sd.subject.commonName) } : {}),
+          ...(Array.isArray(sd.subjectName) ? { subjectAltNames: sd.subjectName.map(String) } : {}),
+          ...(typeof sd.validFrom === 'number' ? { validFrom: sd.validFrom * 1000 } : {}),
+          ...(typeof sd.validTo === 'number' ? { validTo: sd.validTo * 1000 } : {}),
+          ...(typeof sd.tlsVersion === 'string' ? { tlsVersion: sd.tlsVersion } : {}),
+        }
+      : undefined;
+    // Extract detailed resource timing (DNS, TCP, TLS, TTFB).
+    const rt = r.timing;
+    const resourceTiming: ResourceTiming | undefined = rt
+      ? {
+          ...(typeof rt.dnsStart === 'number' ? { dnsStart: rt.dnsStart } : {}),
+          ...(typeof rt.dnsEnd === 'number' ? { dnsEnd: rt.dnsEnd } : {}),
+          ...(typeof rt.connectStart === 'number' ? { connectStart: rt.connectStart } : {}),
+          ...(typeof rt.connectEnd === 'number' ? { connectEnd: rt.connectEnd } : {}),
+          ...(typeof rt.sslStart === 'number' ? { tlsStart: rt.sslStart } : {}),
+          ...(typeof rt.sslEnd === 'number' ? { tlsEnd: rt.sslEnd } : {}),
+          ...(typeof rt.sendStart === 'number' ? { sendStart: rt.sendStart } : {}),
+          ...(typeof rt.sendEnd === 'number' ? { sendEnd: rt.sendEnd } : {}),
+          ...(typeof rt.receiveHeadersEnd === 'number' ? { receiveHeadersStart: rt.receiveHeadersEnd } : {}),
+          ...(typeof rt.receiveHeadersEnd === 'number' && f.startMonotonicSec != null
+            ? { ttfbMs: Math.max(0, rt.receiveHeadersEnd) }
+            : {}),
+        }
+      : undefined;
     this.listener.onUpdate(f.id, {
       status: r.status,
       statusText: r.statusText,
@@ -501,6 +562,13 @@ export class DebuggerCapture {
       ...(typeof r.remoteIPAddress === 'string' ? { remoteAddress: r.remoteIPAddress } : {}),
       ...(typeof r.remotePort === 'number' ? { remotePort: r.remotePort } : {}),
       ...(typeof r.protocol === 'string' ? { protocol: r.protocol } : {}),
+      // TLS security details.
+      ...(securityDetails ? { securityDetails } : {}),
+      // Detailed resource timing breakdown.
+      ...(resourceTiming ? { resourceTiming } : {}),
+      // Connection pool metadata.
+      ...(typeof r.connectionId === 'number' ? { connectionId: r.connectionId } : {}),
+      ...(typeof r.connectionReused === 'boolean' ? { connectionReused: r.connectionReused } : {}),
     });
   }
 
@@ -593,15 +661,33 @@ export class DebuggerCapture {
     } catch {
       // Body unavailable (navigation after commit, streamed/worker response, evicted buffer).
     }
+    // If the request had post data that wasn't inline (hasPostData flag), fetch it now.
+    let postData: string | undefined;
+    if (f.hasPostData) {
+      try {
+        const pd = (await chrome.debugger.sendCommand(f.sessionTarget, 'Network.getRequestPostData', {
+          requestId: p.requestId,
+        })) as any;
+        if (typeof pd?.postData === 'string') {
+          postData = pd.postData;
+        }
+      } catch {
+        // Post data may have been evicted from the buffer.
+      }
+    }
     this.listener.onUpdate(f.id, {
       endedAt: timing.endedAt,
       durationMs: timing.durationMs,
       responseBody: body,
       responseSize: typeof p.encodedDataLength === 'number' ? p.encodedDataLength : undefined,
+      // Actual bytes transferred including compressed headers.
+      ...(typeof p.encodedDataLength === 'number' ? { encodedDataLength: p.encodedDataLength } : {}),
       // Bug 4: flag base64 separately instead of overwriting responseMimeType. The real
       // content-type set by onResponseReceived (from r.mimeType) is preserved; har.ts reads
       // responseBodyBase64 to set content.encoding while keeping the true mimeType.
       ...(isBase64 ? { responseBodyBase64: true } : {}),
+      // Late-arriving post data for requests where Chrome set hasPostData but didn't inline it.
+      ...(postData != null ? { requestBody: postData } : {}),
     });
     this.inFlight.delete(key);
   }
@@ -626,6 +712,9 @@ export class DebuggerCapture {
       errorText: p.errorText,
       endedAt: timing.endedAt,
       durationMs: timing.durationMs,
+      // Blocked reason (mixed content, CSP, CORS, etc.) — more informative than errorText alone.
+      ...(typeof p.blockedReason === 'string' ? { blockedReason: p.blockedReason } : {}),
+      ...(p.corsErrorStatus ? { corsErrorStatus: String(p.corsErrorStatus.corsError ?? p.corsErrorStatus) } : {}),
     });
     this.inFlight.delete(key);
   }

@@ -313,6 +313,51 @@ export interface Initiator {
   };
 }
 
+/** TLS/SSL certificate and connection security details from CDP. */
+export interface SecurityDetails {
+  protocol?: string;
+  keyExchange?: string;
+  keyExchangeGroup?: string;
+  cipher?: string;
+  mac?: string;
+  /** Certificate issuer common name. */
+  issuer?: string;
+  /** Certificate subject common name. */
+  subject?: string;
+  /** Subject Alternative Names from the certificate. */
+  subjectAltNames?: string[];
+  /** Certificate validity start (epoch ms). */
+  validFrom?: number;
+  /** Certificate validity end (epoch ms). */
+  validTo?: number;
+  /** TLS version (e.g. "TLS 1.3"). */
+  tlsVersion?: string;
+}
+
+/** Detailed Resource Timing breakdown from CDP (all values in ms, monotonic). */
+export interface ResourceTiming {
+  dnsStart?: number;
+  dnsEnd?: number;
+  connectStart?: number;
+  connectEnd?: number;
+  tlsStart?: number;
+  tlsEnd?: number;
+  sendStart?: number;
+  sendEnd?: number;
+  receiveHeadersStart?: number;
+  /** Time to first byte (TTFB) relative to request start, in ms. */
+  ttfbMs?: number;
+}
+
+/** A redirect hop in the redirect chain. */
+export interface RedirectHop {
+  url: string;
+  status: number;
+  statusText: string;
+  headers: CapturedHeader[];
+  timestamp: number;
+}
+
 export interface CapturedRequest {
   id: string;
   tabId: number;
@@ -369,6 +414,26 @@ export interface CapturedRequest {
   eventSourceMessages?: EventSourceMessage[];
   /** Page lifecycle events observed during this request's tab session. */
   pageEvents?: PageEvent[];
+  /** TLS/SSL security details (from responseReceived.securityDetails). */
+  securityDetails?: SecurityDetails;
+  /** Detailed resource timing breakdown (DNS, TCP, TLS, TTFB). */
+  resourceTiming?: ResourceTiming;
+  /** Redirect chain — each hop with URL, status, headers, timestamp. */
+  redirects?: RedirectHop[];
+  /** Chrome's resource priority (VeryLow/Low/Medium/High/VeryHigh). */
+  priority?: string;
+  /** Chrome connection ID — track connection pool reuse (keep-alive). */
+  connectionId?: number;
+  /** Whether the connection was reused from the pool. */
+  connectionReused?: boolean;
+  /** Actual bytes transferred including compressed headers (from loadingFinished.encodedDataLength). */
+  encodedDataLength?: number;
+  /** Request body fetch needed but not yet retrieved (hasPostData flag). */
+  hasPostData?: boolean;
+  /** Reason the request was blocked (mixed content, CSP, CORS, etc.). */
+  blockedReason?: string;
+  /** CORS error status if the request failed due to CORS. */
+  corsErrorStatus?: string;
 }
 
 export type CaptchaType =

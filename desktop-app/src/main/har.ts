@@ -113,6 +113,32 @@ function buildEntry(req: CapturedRequest) {
           })),
         }
       : {}),
+    // TLS security details
+    ...(req.securityDetails ? { _securityDetails: req.securityDetails } : {}),
+    // Detailed resource timing
+    ...(req.resourceTiming ? { _resourceTiming: req.resourceTiming } : {}),
+    // Redirect chain
+    ...(req.redirects?.length
+      ? {
+          _redirects: req.redirects.map((r) => ({
+            url: r.url,
+            status: r.status,
+            statusText: r.statusText,
+            headers: r.headers,
+            time: r.timestamp / 1000,
+          })),
+        }
+      : {}),
+    // Chrome resource priority
+    ...(req.priority ? { _priority: req.priority } : {}),
+    // Connection pool metadata
+    ...(req.connectionId != null ? { _connectionId: req.connectionId } : {}),
+    ...(req.connectionReused != null ? { _connectionReused: req.connectionReused } : {}),
+    // Actual bytes transferred (including compressed headers)
+    ...(req.encodedDataLength != null ? { _encodedDataLength: req.encodedDataLength } : {}),
+    // Block reason + CORS error
+    ...(req.blockedReason ? { _blockedReason: req.blockedReason } : {}),
+    ...(req.corsErrorStatus ? { _corsErrorStatus: req.corsErrorStatus } : {}),
   };
 }
 
