@@ -139,6 +139,21 @@ function buildEntry(req: CapturedRequest) {
     // Block reason + CORS error
     ...(req.blockedReason ? { _blockedReason: req.blockedReason } : {}),
     ...(req.corsErrorStatus ? { _corsErrorStatus: req.corsErrorStatus } : {}),
+    // JS console messages
+    ...(req.consoleMessages?.length
+      ? {
+          _consoleMessages: req.consoleMessages.map((m) => ({
+            type: m.type,
+            text: m.text,
+            ...(m.url ? { url: m.url } : {}),
+            ...(m.lineNumber != null ? { line: m.lineNumber } : {}),
+            ...(m.stackTrace ? { stack: m.stackTrace } : {}),
+            time: m.timestamp / 1000,
+          })),
+        }
+      : {}),
+    // Core Web Vitals
+    ...(req.webVitals ? { _webVitals: req.webVitals } : {}),
   };
 }
 

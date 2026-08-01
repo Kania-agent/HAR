@@ -358,6 +358,49 @@ export interface RedirectHop {
   timestamp: number;
 }
 
+/** A JS console message captured from Runtime.consoleAPICalled. */
+export interface ConsoleMessage {
+  type: 'log' | 'warning' | 'error' | 'info' | 'debug' | 'exception';
+  text: string;
+  url?: string;
+  lineNumber?: number;
+  columnNumber?: number;
+  timestamp: number;
+  /** Stack trace call frames (if available from exception events). */
+  stackTrace?: Array<{
+    url: string;
+    functionName: string;
+    lineNumber: number;
+    columnNumber: number;
+  }>;
+}
+
+/** Core Web Vitals and performance metrics snapshot. */
+export interface WebVitalMetrics {
+  /** First Contentful Paint (ms). */
+  fcp?: number;
+  /** Largest Contentful Paint (ms). */
+  lcp?: number;
+  /** Cumulative Layout Shift (unitless). */
+  cls?: number;
+  /** Time to First Byte (ms). */
+  ttfb?: number;
+  /** Time to Interactive (ms). */
+  tti?: number;
+  /** Total Blocking Time (ms). */
+  tbt?: number;
+  /** DOM Content Loaded (ms). */
+  domContentLoaded?: number;
+  /** Load event (ms). */
+  loadEvent?: number;
+  /** JS heap size (bytes). */
+  jsHeapSize?: number;
+  /** JS heap used (bytes). */
+  jsHeapUsed?: number;
+  /** Timestamp of the metrics snapshot. */
+  timestamp: number;
+}
+
 export interface CapturedRequest {
   id: string;
   tabId: number;
@@ -434,6 +477,10 @@ export interface CapturedRequest {
   blockedReason?: string;
   /** CORS error status if the request failed due to CORS. */
   corsErrorStatus?: string;
+  /** JS console messages correlated with this request's tab. */
+  consoleMessages?: ConsoleMessage[];
+  /** Core Web Vitals snapshot for the page when this request was captured. */
+  webVitals?: WebVitalMetrics;
 }
 
 export type CaptchaType =
@@ -472,6 +519,8 @@ export type BridgeMessage =
   | { kind: 'ws-message'; id: string; message: WebSocketMessage }
   | { kind: 'sse-message'; id: string; message: EventSourceMessage }
   | { kind: 'page-event'; tabId: number; event: PageEvent }
+  | { kind: 'console-message'; tabId: number; message: ConsoleMessage }
+  | { kind: 'metrics'; tabId: number; metrics: WebVitalMetrics }
   | { kind: 'allowlist-sync'; domains: string[] }
   | { kind: 'set-allowlist'; domains: string[] }
   | { kind: 'set-capture'; enabled: boolean }

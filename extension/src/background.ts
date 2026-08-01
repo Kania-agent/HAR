@@ -22,6 +22,8 @@ import type {
   WebSocketMessage,
   EventSourceMessage,
   PageEvent,
+  ConsoleMessage,
+  WebVitalMetrics,
   CaptchaDetection,
   CaptchaType,
 } from '@har-suite/shared';
@@ -155,6 +157,12 @@ const capture = new DebuggerCapture(
     },
     onPageEvent: (tabId: number, event: PageEvent) => {
       bridge.send({ kind: 'page-event', tabId, event });
+    },
+    onConsoleMessage: (tabId: number, message: ConsoleMessage) => {
+      bridge.send({ kind: 'console-message', tabId, message });
+    },
+    onMetrics: (tabId: number, metrics: WebVitalMetrics) => {
+      bridge.send({ kind: 'metrics', tabId, metrics });
     },
     onCaptchaUrl: (url, tabId, requestId, requestBody) => {
       // Runs for ALL request types including Script/Document that HAR capture

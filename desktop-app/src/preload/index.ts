@@ -4,6 +4,8 @@ import type {
   WebSocketMessage,
   EventSourceMessage,
   PageEvent,
+  ConsoleMessage,
+  WebVitalMetrics,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -134,6 +136,18 @@ const api = {
       cb(payload.tabId, payload.event);
     ipcRenderer.on('capture:page-event', handler);
     return () => ipcRenderer.off('capture:page-event', handler);
+  },
+  onConsoleMessage: (cb: (tabId: number, msg: ConsoleMessage) => void) => {
+    const handler = (_: unknown, payload: { tabId: number; message: ConsoleMessage }) =>
+      cb(payload.tabId, payload.message);
+    ipcRenderer.on('capture:console-message', handler);
+    return () => ipcRenderer.off('capture:console-message', handler);
+  },
+  onMetrics: (cb: (tabId: number, metrics: WebVitalMetrics) => void) => {
+    const handler = (_: unknown, payload: { tabId: number; metrics: WebVitalMetrics }) =>
+      cb(payload.tabId, payload.metrics);
+    ipcRenderer.on('capture:metrics', handler);
+    return () => ipcRenderer.off('capture:metrics', handler);
   },
   onStatus: (cb: (status: StatusPayload) => void) => {
     const handler = (_: unknown, status: StatusPayload) => cb(status);

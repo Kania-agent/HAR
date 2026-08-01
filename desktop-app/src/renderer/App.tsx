@@ -7,6 +7,8 @@ import type {
   WebSocketMessage,
   EventSourceMessage,
   PageEvent,
+  ConsoleMessage,
+  WebVitalMetrics,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -163,6 +165,12 @@ export default function App() {
       // Page events are broadcast for timeline enrichment; no per-request state update needed.
       // Future: store in a dedicated pageEvents state for timeline markers.
     });
+    const offConsole = window.harSuite.onConsoleMessage?.((_tabId: number, _msg: ConsoleMessage) => {
+      // Console messages are broadcast for timeline enrichment; future: store in a console panel.
+    });
+    const offMetrics = window.harSuite.onMetrics?.((_tabId: number, _metrics: WebVitalMetrics) => {
+      // Web Vitals are broadcast for performance panel; future: store in a metrics state.
+    });
     const offStatus = window.harSuite.onStatus((s) => {
       setAllowlist(s.allowlist);
       setCapturing(s.captureEnabled);
@@ -219,6 +227,8 @@ export default function App() {
       offWs();
       offSse?.();
       offPage?.();
+      offConsole?.();
+      offMetrics?.();
       offStatus();
       offAppStatus();
       offCliStatus();

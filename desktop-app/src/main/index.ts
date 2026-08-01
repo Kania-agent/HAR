@@ -48,6 +48,8 @@ import type {
   WebSocketMessage,
   EventSourceMessage,
   PageEvent,
+  ConsoleMessage,
+  WebVitalMetrics,
   RedactionConfig,
   CaptchaDetection,
   CaptureScope,
@@ -174,10 +176,15 @@ function applySseMessage(id: string, msg: EventSourceMessage) {
 }
 
 function applyPageEvent(tabId: number, event: PageEvent) {
-  // Page events are not tied to a single request; broadcast to renderer for
-  // timeline display. They are not persisted per-request but could be added
-  // to a dedicated page_events table in the future.
   sendToRenderer('capture:page-event', { tabId, event });
+}
+
+function applyConsoleMessage(tabId: number, msg: ConsoleMessage) {
+  sendToRenderer('capture:console-message', { tabId, message: msg });
+}
+
+function applyMetrics(tabId: number, metrics: WebVitalMetrics) {
+  sendToRenderer('capture:metrics', { tabId, metrics });
 }
 
 // Single ingestion surface shared by BOTH capture sources (the Chrome-extension
@@ -230,6 +237,12 @@ bridge.on('message', (msg: BridgeMessage) => {
       break;
     case 'page-event':
       applyPageEvent(msg.tabId, msg.event);
+      break;
+    case 'console-message':
+      applyConsoleMessage(msg.tabId, msg.message);
+      break;
+    case 'metrics':
+      applyMetrics(msg.tabId, msg.metrics);
       break;
     case 'status':
       allowlist = msg.allowlist;

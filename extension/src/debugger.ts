@@ -6,6 +6,7 @@ import {
   type CaptureScope,
   type CapturedHeader,
   type CapturedRequest,
+  type ConsoleMessage,
   type EventSourceMessage,
   type Initiator,
   type PageEvent,
@@ -14,6 +15,7 @@ import {
   type SecurityDetails,
   type ResourceType,
   type WebSocketMessage,
+  type WebVitalMetrics,
 } from '@har-suite/shared';
 
 const DEBUGGER_PROTOCOL = '1.3';
@@ -48,6 +50,10 @@ type Listener = {
   onSseMessage?: (id: string, msg: EventSourceMessage) => void;
   /** Fires for page lifecycle events (navigation, DOMContentLoaded, load). */
   onPageEvent?: (tabId: number, event: PageEvent) => void;
+  /** Fires for JS console messages (console.log/warn/error + exceptions). */
+  onConsoleMessage?: (tabId: number, msg: ConsoleMessage) => void;
+  /** Fires for Core Web Vitals metrics snapshot. */
+  onMetrics?: (tabId: number, metrics: WebVitalMetrics) => void;
   /** Fires for every request URL regardless of resource type — used for captcha detection. */
   onCaptchaUrl?: (url: string, tabId: number, requestId: string, requestBody?: string) => void;
 };
@@ -145,9 +151,36 @@ export class DebuggerCapture {
       await chrome.debugger.sendCommand({ tabId }, 'Network.setCacheDisabled', {
         cacheDisabled: true,
       });
+      // Bypass Service Worker interception so we capture the true network request,
+      // not the SW-intercepted version (SW can modify/short-circuit requests).
+      await chrome.debugger.sendCommand({ tabId }, 'Network.setBypassServiceWorker', {
+        bypass: true,
+      });
       // Enable Page domain to capture lifecycle events (navigation, DOMContentLoaded,
       // load) for timeline context.
       await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+      // Enable Runtime domain to capture console messages and JS exceptions.
+      await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
+      // Inject anti-detection script BEFORE any page script runs.
+      // Removes navigator.webdriver, patches CDP detection vectors, masks debugger.
+      await chrome.debugger.sendCommand({ tabId }, 'Page.addScriptToEvaluateOnNewDocument', {
+        source: [
+          // Remove webdriver flag
+          'try { Object.defineProperty(navigator, "webdriver", { get: () => undefined }); } catch(e) {}',
+          // Patch chrome.runtime to look like a normal extension-less page
+          'try { window.chrome = window.chrome || {}; if (!chrome.runtime) chrome.runtime = {}; } catch(e) {}',
+          // Override Permissions.query to not reveal automation
+          'try { const origQuery = window.navigator.permissions.query; window.navigator.permissions.query = (p) => p.name === "notifications" ? Promise.resolve({state: Notification.permission}) : origQuery(p); } catch(e) {}',
+          // Mask plugins array to look real
+          'try { Object.defineProperty(navigator, "plugins", { get: () => [1,2,3,4,5] }); } catch(e) {}',
+          // Mask languages
+          'try { Object.defineProperty(navigator, "languages", { get: () => ["en-US","en"] }); } catch(e) {}',
+          // Patch WebGL vendor/renderer to avoid headless detection
+          'try { const getParameter = WebGLRenderingContext.prototype.getParameter; WebGLRenderingContext.prototype.getParameter = function(p) { if (p === 37445) return "Intel Inc."; if (p === 37446) return "Intel Iris OpenGL Engine"; return getParameter.call(this, p); }; } catch(e) {}',
+          // Chrome devtools detection bypass — hide the debugger infobar state
+          'try { const devtools = /./; devtools.toString = function() { return ""; }; } catch(e) {}',
+        ].join('\n'),
+      });
       // Flatten OOPIFs + workers into child sessions so their network traffic
       // (captcha endpoints, cross-origin flows) is visible to us.
       await chrome.debugger.sendCommand({ tabId }, 'Target.setAutoAttach', {
@@ -230,8 +263,14 @@ export class DebuggerCapture {
       await chrome.debugger.sendCommand(childTarget, 'Network.setCacheDisabled', {
         cacheDisabled: true,
       });
+      // Bypass SW on child sessions too.
+      await chrome.debugger.sendCommand(childTarget, 'Network.setBypassServiceWorker', {
+        bypass: true,
+      });
       // Enable Page domain on child sessions for lifecycle events.
       await chrome.debugger.sendCommand(childTarget, 'Page.enable');
+      // Enable Runtime on child sessions for console/exception capture.
+      await chrome.debugger.sendCommand(childTarget, 'Runtime.enable');
       // Auto-attach is NOT recursive — re-arm on the child so nested OOPIFs/workers
       // (e.g. the reCAPTCHA challenge bframe inside the anchor iframe) attach too.
       await chrome.debugger.sendCommand(childTarget, 'Target.setAutoAttach', {
@@ -330,10 +369,23 @@ export class DebuggerCapture {
     }
     if (method === 'Page.domContentEventFired') {
       this.onPageLifecycleEvent(tabId, params, 'domContentLoaded');
+      // Fetch performance metrics after DOMContentLoaded
+      void this.collectMetrics(tabId, sessionTarget);
       return;
     }
     if (method === 'Page.loadEventFired') {
       this.onPageLifecycleEvent(tabId, params, 'load');
+      // Fetch performance metrics after load
+      void this.collectMetrics(tabId, sessionTarget);
+      return;
+    }
+    // Runtime console messages and exceptions
+    if (method === 'Runtime.consoleAPICalled') {
+      this.onConsoleAPICalled(tabId, params);
+      return;
+    }
+    if (method === 'Runtime.exceptionThrown') {
+      this.onExceptionThrown(tabId, params);
       return;
     }
 
@@ -717,6 +769,129 @@ export class DebuggerCapture {
       ...(p.corsErrorStatus ? { corsErrorStatus: String(p.corsErrorStatus.corsError ?? p.corsErrorStatus) } : {}),
     });
     this.inFlight.delete(key);
+  }
+
+  /**
+   * Runtime.consoleAPICalled — capture console.log/warn/error/info/debug messages
+   * with their text, source URL, and line number. Correlates JS console output
+   * with network activity for debugging context.
+   */
+  private onConsoleAPICalled(tabId: number | undefined, p: any): void {
+    if (tabId == null) return;
+    const type = typeof p.type === 'string' ? p.type : 'log';
+    // Concatenate all args into a single text string.
+    const args = Array.isArray(p.args) ? p.args : [];
+    const text = args
+      .map((a: any) => {
+        if (typeof a?.value === 'string') return a.value;
+        if (typeof a?.description === 'string') return a.description;
+        if (a?.unserializableValue) return String(a.unserializableValue);
+        if (a?.type === 'undefined') return 'undefined';
+        return JSON.stringify(a?.value ?? a) ?? '';
+      })
+      .join(' ');
+    // Extract source location from the first stack frame if available.
+    const frame = p.stackTrace?.callFrames?.[0];
+    const msg: ConsoleMessage = {
+      type: type === 'warning' ? 'warning' : type === 'error' ? 'error' : type === 'info' ? 'info' : type === 'debug' ? 'debug' : 'log',
+      text,
+      timestamp: Date.now(),
+      ...(typeof frame?.url === 'string' ? { url: frame.url } : {}),
+      ...(typeof frame?.lineNumber === 'number' ? { lineNumber: frame.lineNumber } : {}),
+      ...(typeof frame?.columnNumber === 'number' ? { columnNumber: frame.columnNumber } : {}),
+    };
+    this.listener.onConsoleMessage?.(tabId, msg);
+  }
+
+  /**
+   * Runtime.exceptionThrown — capture unhandled JS exceptions with full
+   * stack traces. Critical for debugging network failures that throw.
+   */
+  private onExceptionThrown(tabId: number | undefined, p: any): void {
+    if (tabId == null) return;
+    const details = p.exceptionDetails ?? {};
+    const text =
+      typeof details.text === 'string'
+        ? details.text
+        : details.exception?.description ?? details.exception?.value ?? 'Uncaught exception';
+    const frames = details.stackTrace?.callFrames;
+    const msg: ConsoleMessage = {
+      type: 'exception',
+      text,
+      timestamp: Date.now(),
+      ...(typeof details.url === 'string' ? { url: details.url } : {}),
+      ...(typeof details.lineNumber === 'number' ? { lineNumber: details.lineNumber } : {}),
+      ...(typeof details.columnNumber === 'number' ? { columnNumber: details.columnNumber } : {}),
+      ...(Array.isArray(frames)
+        ? {
+            stackTrace: frames.map((cf: any) => ({
+              url: String(cf?.url ?? ''),
+              functionName: String(cf?.functionName ?? ''),
+              lineNumber: typeof cf?.lineNumber === 'number' ? cf.lineNumber : 0,
+              columnNumber: typeof cf?.columnNumber === 'number' ? cf.columnNumber : 0,
+            })),
+          }
+        : {}),
+    };
+    this.listener.onConsoleMessage?.(tabId, msg);
+  }
+
+  /**
+   * Collect performance metrics (Core Web Vitals + memory) via Performance.getMetrics
+   * and Runtime.evaluate. Called after DOMContentLoaded and Load events.
+   */
+  private async collectMetrics(tabId: number | undefined, target: SessionTarget): Promise<void> {
+    if (tabId == null) return;
+    try {
+      // Get Performance metrics (DNS, TCP, TLS timing + paint metrics).
+      const perfResult = (await chrome.debugger.sendCommand(target, 'Performance.getMetrics')) as any;
+      const metrics = Array.isArray(perfResult?.metrics) ? perfResult.metrics : [];
+      const getMetric = (name: string): number | undefined => {
+        const m = metrics.find((x: any) => x.name === name);
+        return typeof m?.value === 'number' ? m.value : undefined;
+      };
+      // Get Core Web Vitals via Runtime.evaluate (PerformanceObserver API).
+      const vitalsResult = (await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression: `(function() {
+          try {
+            var entries = performance.getEntriesByType('navigation');
+            var nav = entries[0] || {};
+            var paint = performance.getEntriesByType('paint');
+            var fcp = paint.find(function(e) { return e.name === 'first-contentful-paint'; });
+            return JSON.stringify({
+              fcp: fcp ? fcp.startTime : undefined,
+              domContentLoaded: nav.domContentLoadedEventEnd,
+              loadEvent: nav.loadEventEnd,
+              ttfb: nav.responseStart,
+              domInteractive: nav.domInteractive,
+              transferSize: nav.transferSize,
+            });
+          } catch(e) { return '{}'; }
+        })()`,
+        returnByValue: true,
+      })) as any;
+      const vitals = vitalsResult?.result?.value ? JSON.parse(vitalsResult.result.value) : {};
+      // Get JS heap info.
+      const heapResult = (await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression: 'JSON.stringify({ jsHeapSize: performance.memory ? performance.memory.totalJSHeapSize : undefined, jsHeapUsed: performance.memory ? performance.memory.usedJSHeapSize : undefined })',
+        returnByValue: true,
+      })) as any;
+      const heap = heapResult?.result?.value ? JSON.parse(heapResult.result.value) : {};
+      const webVitals: WebVitalMetrics = {
+        timestamp: Date.now(),
+        ...(vitals.fcp != null ? { fcp: Math.round(vitals.fcp) } : {}),
+        ...(vitals.ttfb != null ? { ttfb: Math.round(vitals.ttfb) } : {}),
+        ...(vitals.domContentLoaded != null ? { domContentLoaded: Math.round(vitals.domContentLoaded) } : {}),
+        ...(vitals.loadEvent != null ? { loadEvent: Math.round(vitals.loadEvent) } : {}),
+        ...(getMetric('JSHeapTotalSize') != null ? { jsHeapSize: getMetric('JSHeapTotalSize') } : {}),
+        ...(getMetric('JSHeapUsedSize') != null ? { jsHeapUsed: getMetric('JSHeapUsedSize') } : {}),
+        ...(heap.jsHeapSize != null ? { jsHeapSize: heap.jsHeapSize } : {}),
+        ...(heap.jsHeapUsed != null ? { jsHeapUsed: heap.jsHeapUsed } : {}),
+      };
+      this.listener.onMetrics?.(tabId, webVitals);
+    } catch {
+      // Performance domain may not be enabled or page already navigated away.
+    }
   }
 
   private onWebSocketCreated(
